@@ -17,4 +17,5 @@ COPY 10-prepare.sh /kubedoop/mount/pre-script/10-prepare.sh
 COPY 10-check-stopped.sh /kubedoop/mount/post-script/10-check-stopped.sh
 RUN chmod 0755 /kubedoop/mount/pre-script/10-prepare.sh /kubedoop/mount/post-script/10-check-stopped.sh
 ENV METASTORE_CONF_DIR=/kubedoop/run/conf HADOOP_HEAPSIZE=512
-USER kubedoop
+ARG RUNTIME_USER=kubedoop
+USER ${RUNTIME_USER}

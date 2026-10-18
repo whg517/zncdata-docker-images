@@ -95,6 +95,9 @@ FROM zncdatadev/image/java-base
 ARG PRODUCT_VERSION
 ARG HADOOP_VERSION
 
+RUN microdnf install util-linux-core \
+    && microdnf clean all
+
 WORKDIR /kubedoop
 
 COPY --from=hive-builder --chown=kubedoop:kubedoop /kubedoop/ /kubedoop/

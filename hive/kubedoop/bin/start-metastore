@@ -71,12 +71,22 @@ run_schema_tool() {
     fi
     break
   done
-  SCHEMA_PID=""
   if [[ -n "$STOP_TIMER_PID" ]]; then
-    kill "$STOP_TIMER_PID" 2>/dev/null || true
-    wait "$STOP_TIMER_PID" 2>/dev/null || true
+    # This owned timer must be cancelled even if its shell ignores TERM.
+    # Reap it before clearing the schema PID or leaving the cancellation path.
+    kill -KILL "$STOP_TIMER_PID" 2>/dev/null || true
+    while :; do
+      local timer_rc=0
+      wait "$STOP_TIMER_PID" 2>/dev/null || timer_rc=$?
+      if [[ "$SHUTDOWN_REQUESTED" -eq 1 && ( "$timer_rc" -eq 130 || "$timer_rc" -eq 143 ) ]] &&
+         kill -0 "$STOP_TIMER_PID" 2>/dev/null; then
+        continue
+      fi
+      break
+    done
     STOP_TIMER_PID=""
   fi
+  SCHEMA_PID=""
   [[ "$SHUTDOWN_REQUESTED" -eq 0 ]] || exit 143
   return "$rc"
 }

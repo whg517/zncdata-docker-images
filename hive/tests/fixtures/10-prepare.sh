@@ -10,3 +10,4 @@ if [[ "${TEST_NATIVE_CMD:-false}" == true ]]; then
     fi
 fi
 echo TEST_HIVE_PRE_READY
+echo PRE >> /kubedoop/run/hive-events

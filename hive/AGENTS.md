@@ -36,6 +36,7 @@ See `versions.yaml` for current values. Structure:
 - `bin/entrypoint.sh`, `lib/{log,run,signal}.sh` -- universal foreground lifecycle, projected root-owned hooks, bounded graceful termination and application status propagation.
 - Default ENTRYPOINT is tini plus the universal entrypoint; default CMD is `base --service metastore`. No database type or schema initialization policy is imposed by the default CMD.
 - `tests/` -- source/helper/image regressions and real Thrift/Derby persistence/TERM/INT tests for default CMD and the schema helper; fixtures never enter production.
+- Owned managed process groups drain before post-hooks even after normal main exit. Lifecycle ALRM and schema-helper timers are forcibly cancelled and reaped; tests retain true statuses 127/142/165 and cover root/UID1001 native and wrapper launches with three same-container starts, TERM/INT/stop and exact PRE/POST ordering.
 
 ## Extras
 - Uses Java 8 for devel but Java 11 for base (unique split across the repo)

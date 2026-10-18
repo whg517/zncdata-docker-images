@@ -9,3 +9,4 @@ for cmdline in /proc/[0-9]*/cmdline; do
 done
 test -d /kubedoop/run/metastore-db
 echo TEST_HIVE_POST_DONE
+echo POST >> /kubedoop/run/hive-events

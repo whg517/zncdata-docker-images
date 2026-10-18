@@ -20,7 +20,8 @@ initialization, **not** a schema upgrade or migration. An initialization failure
 prevents service startup. The helper now validates options, accepts service
 arguments after `--`, does not log argv, and execs the native launcher so the
 managed PID becomes the actual JVM. TERM/INT during schema preparation terminate
-and reap the owned schema child; cancellation never starts the metastore.
+and reap the owned schema child; cancellation never starts the metastore. The
+owned cancellation timer is forcibly cancelled and reaped even if it ignores TERM.
 
 Hive 4.0.0's native schemaTool script references the wrong Java package.
 Runtime assembly corrects only that version to the class actually packaged in
@@ -45,12 +46,18 @@ TERM/INT use TERM-based graceful shutdown. `KUBEDOOP_KILL_TIMEOUT` (default 30,
 positive integer seconds) bounds the wait before KILL escalation. Tini is PID 1
 and reaps orphans. The root-owned sticky HOME permits UID 1001 cache writes
 while preventing replacement of the root-owned framework directories.
+Managed commands own a separate session/process group. Live descendants drain
+before post-hooks even after normal main exit, using the same shutdown deadline.
+The ALRM timer is cancelled and reaped before its handler is removed; real exit
+statuses including 127, 142 and 165 remain valid application results.
 
 ## Regression suites
 
 ```sh
 hive/tests/source-entrypoint-framework.sh
+sudo bash hive/tests/source-entrypoint-framework.sh
 hive/tests/source-start-metastore.sh
+sudo bash hive/tests/source-start-metastore.sh
 hive/tests/image-entrypoint-framework.sh IMAGE
 bash hive/tests/image-schema-cancellation.sh IMAGE
 hive/tests/image-hive-lifecycle.sh IMAGE
@@ -73,9 +80,11 @@ metastore/Hadoop JARs with a separate JDK 11 builder. Only client classes are
 copied into the disposable test image; no compiler is added to production.
 Private embedded Derby and loopback Thrift settings exist **only in tests**.
 The suite tests both default CMD and explicit start-metastore, performs real
-database create/read operations over Thrift, restarts the same container,
-verifies database contents and schema reuse, then checks TERM and INT shutdown
-with exactly-once hooks and no surviving metastore JVM. It publishes no ports
+database create/read operations over Thrift, starts each same container three
+times under both UID1001 and root, verifies database contents and schema reuse,
+then checks explicit TERM, INT and docker stop with exact PRE/POST ordering and
+no surviving metastore JVM or KILL escalation. Container-side CLI deadlines also
+cover normal and TERM-ignoring commands. It publishes no ports
 and uses no host data mounts or external database.
 
 The test configuration selects the distribution's real

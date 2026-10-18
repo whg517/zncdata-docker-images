@@ -19,7 +19,7 @@ for budget in 1 4; do
         ')
         ready=false
         for ((i=0;i<30;i++)); do
-            if docker logs "$CID" 2>&1 | grep -Fq TEST_SCHEMA_READY; then ready=true; break; fi
+            if docker logs "$CID" 2>&1 | grep -F TEST_SCHEMA_READY >/dev/null; then ready=true; break; fi
             sleep 0.1
         done
         [[ "$ready" == true ]] || fail "schema child did not start"

@@ -5,12 +5,15 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 IMAGE="${1:?Usage: image-hive-lifecycle.sh IMAGE}"
 TEST_IMAGE="hive-lifecycle-test:$(date +%s)-$$"
 CID=""
+CONTAINER_IDS=()
 cleanup() {
-    [[ -z "$CID" ]] || docker rm -f "$CID" >/dev/null 2>&1 || true
+    local cid
+    for cid in "${CONTAINER_IDS[@]}"; do docker rm -fv "$cid" >/dev/null 2>&1 || true; done
     docker image rm "$TEST_IMAGE" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 fail() {
+    [[ -z "$CID" ]] || docker inspect -f 'state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$CID" >&2 || true
     [[ -z "$CID" ]] || docker logs --tail 120 "$CID" >&2 || true
     echo "not ok - $*" >&2
     exit 1
@@ -34,7 +37,7 @@ wait_for_server() {
 check_foreground_jvm() {
     local pid
     pid=$(docker logs "$CID" 2>&1 | awk '/Main process started/ {gsub(/[()]/, ""); print $NF}' | tail -1)
-    [[ "$pid" =~ ^[0-9]+$ ]] || fail "managed main PID not reported"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "managed main PID not reported"
     docker exec "$CID" bash -c '
         test "$(cat "/proc/$1/comm")" = java
         grep -aq org.apache.hadoop.hive.metastore.HiveMetaStore "/proc/$1/cmdline"
@@ -42,7 +45,7 @@ check_foreground_jvm() {
 }
 stop_and_check() {
     local count="$1" signal="$2" output rc
-    if [[ "$signal" == TERM ]]; then
+    if [[ "$signal" == stop ]]; then
         docker stop -t 45 "$CID" >/dev/null || fail "docker stop failed"
     else
         docker kill --signal "$signal" "$CID" >/dev/null || fail "shutdown signal failed"
@@ -53,9 +56,30 @@ stop_and_check() {
     output=$(docker logs "$CID" 2>&1)
     [[ "$(grep -c '^TEST_HIVE_PRE_READY$' <<< "$output")" == "$count" ]] || fail "pre-hooks did not run once per start"
     [[ "$(grep -c '^TEST_HIVE_POST_DONE$' <<< "$output")" == "$count" ]] || fail "post-hooks did not run once per stop"
-    ! grep -Eq 'Main process did not exit|post-script: .*failed|metastore JVM is still running' <<< "$output" || fail "shutdown escalated or post-hooks failed"
+    ! grep -Eq 'sending SIGKILL|post-script: .*failed|metastore JVM is still running' <<< "$output" || fail "shutdown escalated or post-hooks failed"
+    local events expected="" i
+    events=$(docker cp "$CID:/kubedoop/run/hive-events" - | tar -xO | tr '\n' ',')
+    for ((i=0;i<count;i++)); do expected+=PRE,POST,; done
+    [[ "$events" == "$expected" ]] || fail "hook order/count changed: $events"
 }
-docker build -q --build-arg "IMAGE=$IMAGE" -t "$TEST_IMAGE" "$SCRIPT_DIR/fixtures" >/dev/null || fail "fixture/client build failed"
+test_cli_deadlines() {
+    local mode pid rc expected
+    for mode in normal ignore-term; do
+        rc=0
+        pid=$(timeout --kill-after=2 12 docker exec -i "$CID" timeout --kill-after=2 1 bash -c '
+            if [[ "$1" == ignore-term ]]; then trap "" TERM; fi
+            echo $$
+            exec sleep 60
+        ' bash "$mode") || rc=$?
+        expected=124
+        [[ "$mode" != ignore-term ]] || expected=137
+        [[ "$rc" == "$expected" && "$pid" =~ ^[1-9][0-9]*$ ]] || fail "CLI deadline failed ($mode, status $rc)"
+        docker exec "$CID" bash -c '! kill -0 "$1" 2>/dev/null' bash "$pid" || fail "timed-out CLI remained running ($mode)"
+    done
+    echo 'ok - container CLI deadlines terminate normal and SIGTERM-ignoring commands'
+}
+for runtime_user in kubedoop root; do
+docker build -q --build-arg "IMAGE=$IMAGE" --build-arg "RUNTIME_USER=$runtime_user" -t "$TEST_IMAGE" "$SCRIPT_DIR/fixtures" >/dev/null || fail "fixture/client build failed"
 for mode in native wrapper; do
     if [[ "$mode" == native ]]; then
         # Exercise production default CMD; test-only hook explicitly prepares Derby.
@@ -64,23 +88,32 @@ for mode in native wrapper; do
         CID=$(docker run -d "$TEST_IMAGE" start-metastore --db-type derby \
             --config /kubedoop/run/conf --hive-bin-dir /kubedoop/hive-metastore/bin)
     fi
-    wait_for_server
-    check_foreground_jvm
+    CONTAINER_IDS+=("$CID")
     db="lifecycle_$mode"
-    client create "$db" >/dev/null || fail "Thrift database creation failed"
-    stop_and_check 1 TERM
-    docker start "$CID" >/dev/null
-    wait_for_server
-    check_foreground_jvm
-    [[ "$(client check "$db" 2>/dev/null | tail -1)" == "$db" ]] || fail "restart lost database identity or contents"
-    stop_and_check 2 INT
+    for cycle in 1 2 3; do
+        wait_for_server
+        expected_uid=1001
+        [[ "$runtime_user" != root ]] || expected_uid=0
+        [[ $(docker exec "$CID" id -u) == "$expected_uid" ]] || fail 'runtime identity changed'
+        [[ $(docker exec "$CID" cat /proc/1/comm) == tini ]] || fail 'Tini PID1 changed'
+        check_foreground_jvm
+        if [[ "$cycle" == 1 ]]; then
+            test_cli_deadlines
+            client create "$db" >/dev/null || fail "Thrift database creation failed"
+        fi
+        [[ "$(client check "$db" 2>/dev/null | tail -1)" == "$db" ]] || fail "restart lost database identity or contents"
+        signal=TERM
+        [[ "$cycle" != 2 ]] || signal=INT
+        [[ "$cycle" != 3 ]] || signal=stop
+        stop_and_check "$cycle" "$signal"
+        if [[ "$cycle" -lt 3 ]]; then docker start "$CID" >/dev/null || fail "metastore restart failed"; fi
+    done
     logs=$(docker logs "$CID" 2>&1)
     if [[ "$mode" == native ]]; then
         [[ "$(grep -c '^TEST_HIVE_SCHEMA_INIT$' <<< "$logs")" == 1 ]] || fail "schema was recreated on restart"
     else
         [[ "$(grep -c '^No valid schema found, initializing schema' <<< "$logs")" == 1 ]] || fail "wrapper recreated a valid schema"
     fi
-    docker rm "$CID" >/dev/null
-    CID=""
-    echo "ok - Hive $mode launcher serves real Thrift requests, preserves database contents and handles TERM/INT"
+    echo "ok - Hive $runtime_user $mode real Thrift/Derby persistence, three same-CID starts TERM/INT/stop and exact hooks"
+done
 done

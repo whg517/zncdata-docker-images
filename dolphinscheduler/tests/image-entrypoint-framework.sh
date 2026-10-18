@@ -69,7 +69,7 @@ wait_for_log() {
     local elapsed=0
 
     while [[ $elapsed -lt $timeout ]]; do
-        if docker logs "$cid" 2>&1 | grep -Fq "$pattern"; then
+        if docker logs "$cid" 2>&1 | grep -F "$pattern" >/dev/null; then
             return 0
         fi
         sleep 1
@@ -124,6 +124,7 @@ test_runtime_files_and_user() {
     docker run --rm --user kubedoop --entrypoint /bin/bash "$IMAGE" -c '
         set -euo pipefail
         test "$(id -un)" = "kubedoop"
+        command -v setsid
         test -x /usr/bin/tini
         test -x /kubedoop/bin/entrypoint.sh
         test -x /kubedoop/lib/log.sh
@@ -162,7 +163,7 @@ test_init_reaps_orphans() {
     CONTAINER_IDS+=("$cid")
     [[ "$(docker exec "$cid" cat /proc/1/comm)" == tini ]] || fail "tini is not PID 1"
     orphan=$(docker exec "$cid" bash -c 'sleep 1 & echo $!') || fail "failed to start orphan"
-    [[ "$orphan" =~ ^[0-9]+$ ]] || fail "invalid orphan PID"
+    [[ "$orphan" =~ ^[1-9][0-9]*$ ]] || fail "invalid orphan PID"
     sleep 2
     docker exec "$cid" bash -c 'test ! -e "/proc/$1"' bash "$orphan" || fail "orphan was not reaped"
     docker stop -t 5 "$cid" >/dev/null || fail "init test did not stop"
@@ -198,6 +199,12 @@ test -f /kubedoop/run/pre-script-marker || exit 1
 if [[ "${TEST_FAIL_POST:-false}" == true ]]; then exit 23; fi
 if [[ "${TEST_REQUIRE_CHILD_CLEANUP:-false}" == true ]]; then
     test -f /kubedoop/run/child-cleanup-done || exit 1
+fi
+if [[ "${TEST_REQUIRE_GROUP_CLEANUP:-false}" == true ]]; then
+    source /kubedoop/lib/signal.sh
+    group=$(cat /kubedoop/run/main-group)
+    [[ "$group" =~ ^[1-9][0-9]*$ ]] || exit 1
+    if _group_has_live_processes "$group"; then exit 1; fi
 fi
 if [[ "${TEST_WAIT_POST:-false}" == true ]]; then
     echo TEST_POST_STARTED
@@ -360,6 +367,41 @@ test_arguments_are_not_logged() {
     pass "command arguments are omitted from framework logs, including debug mode"
 }
 
+test_descendants_after_normal_exit() {
+    local mode="$1" cid output
+    cid=$(docker run -d -e KUBEDOOP_KILL_TIMEOUT=1 -e TEST_REQUIRE_GROUP_CLEANUP=true \
+        "$TEST_IMAGE" bash -c '
+            echo "$$" > /kubedoop/run/main-group
+            bash -c '\''
+                if [[ "$1" == ignore ]]; then
+                    trap "" TERM
+                else
+                    trap "touch /kubedoop/run/descendant-term; exit 42" TERM
+                fi
+                touch /kubedoop/run/descendant-ready
+                while :; do sleep 0.05; done
+            '\'' bash "$1" &
+            while [[ ! -e /kubedoop/run/descendant-ready ]]; do sleep 0.05; done
+            exit 7
+        ' bash "$mode") || fail 'descendant test startup'
+    CONTAINER_IDS+=("$cid")
+    output=$(timeout 8 docker wait "$cid") || fail 'descendant drain was unbounded'
+    [[ $output == 7 ]] || fail 'descendant cleanup changed main status7'
+    output=$(docker logs "$cid" 2>&1)
+    [[ $(grep -xc TEST_POST_SCRIPT_RAN <<< "$output") == 1 ]] || fail 'post ran before descendant drain or not exactly once'
+    if [[ $mode == ignore ]]; then
+        assert_contains "$output" 'Main process group did not exit' 'TERM-ignoring descendant was not escalated'
+    else
+        docker cp "$cid:/kubedoop/run/descendant-term" "$TMP_DIR/descendant-term" >/dev/null || fail 'descendant did not receive TERM'
+        if grep -Fq 'sending SIGKILL' <<< "$output"; then
+            echo "$output" >&2
+            fail 'graceful descendant was forcibly killed'
+        fi
+    fi
+    pass "$mode descendant stops before post-hook after normal main exit"
+}
+
+
 test_link_target_permissions() {
     docker run --rm --user root --entrypoint /bin/bash "$IMAGE" -c '
         set -euo pipefail
@@ -393,8 +435,11 @@ test_root_owned_scripts_execute
 test_hook_failure_behavior
 test_sigterm_is_forwarded
 test_sigterm_is_forwarded 127
+test_sigterm_is_forwarded 142
 test_sigkill_after_timeout
 test_signals_during_cleanup signal
 test_signals_during_cleanup normal
+test_descendants_after_normal_exit graceful
+test_descendants_after_normal_exit ignore
 test_arguments_are_not_logged
 test_link_target_permissions

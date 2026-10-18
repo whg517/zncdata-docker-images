@@ -56,6 +56,9 @@ EOF
 ## stage: final
 FROM zncdatadev/image/java-base
 
+RUN microdnf install util-linux-core \
+    && microdnf clean all
+
 COPY --from=dolphin-builder --chown=kubedoop:kubedoop /kubedoop/ /kubedoop/
 COPY --from=tini-downloader /tmp/tini /usr/bin/tini
 COPY --chown=root:root kubedoop/lib/ /kubedoop/lib/

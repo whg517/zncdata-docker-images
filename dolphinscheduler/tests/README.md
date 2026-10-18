@@ -40,6 +40,12 @@ TERM/INT initiate TERM-based graceful shutdown, bounded by the positive integer
 `KUBEDOOP_KILL_TIMEOUT` (default 30 seconds). Repeated signals cannot interrupt
 cleanup or cause duplicate post-hooks. Root-owned sticky HOME permits user cache
 writes while preventing replacement of root-owned framework directories.
+Managed commands own a separate session/process group. Live descendants drain
+before post-hooks, including after normal main exit, using the same shutdown
+deadline, measured with Linux's monotonic uptime clock so Bash's integer-second
+boundaries cannot prematurely shorten a descendant's grace period. Owned ALRM
+timers are forcibly cancelled and reaped before restoring
+their handler; true application statuses including 127, 142 and 165 are preserved.
 
 Docker arguments replace CMD and are managed verbatim. Kubernetes `command`
 overrides ENTRYPOINT and bypasses these hooks. The existing operator constructs
@@ -51,14 +57,18 @@ Use `args` or explicitly invoke the universal entrypoint to use these hooks.
 
 ```sh
 bash dolphinscheduler/tests/source-entrypoint-framework.sh
+sudo bash dolphinscheduler/tests/source-entrypoint-framework.sh
 bash dolphinscheduler/tests/source-launcher-adaptation.sh
+sudo bash dolphinscheduler/tests/source-launcher-adaptation.sh
 bash dolphinscheduler/tests/image-entrypoint-framework.sh IMAGE
 bash dolphinscheduler/tests/image-role-launchers.sh IMAGE
 bash dolphinscheduler/tests/image-dolphinscheduler-lifecycle.sh IMAGE
 ```
 
 The host needs Docker and jq (the build setup provides jq). CI runs all five
-suites after every native amd64/arm64 version build. The framework image suite
+suites after every native amd64/arm64 version build. CI also runs the source
+and launcher-adaptation suites using the image's native
+Bash as both kubedoop and root. The framework image suite
 checks exact runtime source hashes, metadata/UID, protected directories/writable
 HOME, projected hooks, stdin/clean stdout, status 7/127/42, signal forwarding,
 repeated cleanup signals, escalation, orphan reaping and argv confidentiality.
@@ -70,10 +80,13 @@ An additional regression exercises the actual legacy daemon start/status/stop
 with its original launcher and verifies its owned JVM child stops and PID file
 is removed.
 
-The real standalone suite uses production default CMD, authenticates against the
-actual API, creates a project, stops on TERM, restarts the same container, reads
-the project's identity/description, then stops on INT with exactly-once hooks
-and no surviving JVM. Disposable fixture configuration selects private file H2
+The real standalone suite uses production default CMD as both UID1001 and root,
+authenticates against the actual API, creates a project, and starts each same
+container three times. It reads the project's identity/description across those
+starts and checks explicit TERM, INT and docker stop with exact PRE/POST ordering,
+no KILL escalation and no surviving JVM. Container-side CLI deadlines verify
+both normal and TERM-ignoring commands stop completely. Disposable fixture
+configuration selects private file H2
 and loopback HTTP, initializes only on first start and preserves schema on
 restart. No host data is mounted and no ports are published. These regressions
 validate process management and basic API/database continuity, not multi-node

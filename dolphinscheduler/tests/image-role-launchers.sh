@@ -31,7 +31,7 @@ for role in standalone-server api-server master-server worker-server alert-serve
     CID=$(docker run -d -e JAVA_OPTS=-Dtest-credential=not-for-logs "$TEST_IMAGE" run-dolphinscheduler "$role" 'arg with spaces')
     ready=false
     for ((i=0;i<50;i++)); do
-        if docker logs "$CID" 2>&1 | grep -Fq TEST_JVM_READY; then ready=true; break; fi
+        if docker logs "$CID" 2>&1 | grep -F TEST_JVM_READY >/dev/null; then ready=true; break; fi
         sleep 0.1
     done
     [[ "$ready" == true ]] || fail "native role launcher did not reach JVM: $role"
@@ -41,7 +41,7 @@ for role in standalone-server api-server master-server worker-server alert-serve
     grep -Fxq "$class" <<< "$args" || fail "wrong native role class"
     grep -Fxq 'arg with spaces' <<< "$args" || fail "role lost application argument boundaries"
     grep -Fxq -- '-Dtest-credential=not-for-logs' <<< "$args" || fail "JAVA_OPTS lost"
-    ! docker logs "$CID" 2>&1 | grep -Fq not-for-logs || fail "native launcher leaked JAVA_OPTS"
+    ! docker logs "$CID" 2>&1 | grep -F not-for-logs >/dev/null || fail "native launcher leaked JAVA_OPTS"
     docker kill --signal INT "$CID" >/dev/null
     [[ "$(timeout 10 docker wait "$CID")" == 42 ]] || fail "role JVM shutdown status lost"
     docker rm "$CID" >/dev/null; CID=""

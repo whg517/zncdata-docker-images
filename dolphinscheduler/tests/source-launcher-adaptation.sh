@@ -29,7 +29,7 @@ done
 find "$TASK_DIR/distribution" -name start.sh -exec sha256sum {} + | sort > "$TASK_DIR/native-before"
 bash "$SCRIPT_DIR/../kubedoop/prepare-launchers.sh" "$TASK_DIR/distribution"
 find "$TASK_DIR/distribution" -name start.sh -exec sha256sum {} + | sort > "$TASK_DIR/native-after"
-cmp "$TASK_DIR/native-before" "$TASK_DIR/native-after" || fail "legacy native launchers were modified"
+[[ "$(< "$TASK_DIR/native-before")" == "$(< "$TASK_DIR/native-after")" ]] || fail "legacy native launchers were modified"
 for role in standalone-server api-server master-server worker-server alert-server; do
     "$TASK_DIR/distribution/$role/bin/start-foreground.sh" 'arg with spaces' > "$TASK_DIR/stdout" 2> "$TASK_DIR/stderr" &
     pid=$!

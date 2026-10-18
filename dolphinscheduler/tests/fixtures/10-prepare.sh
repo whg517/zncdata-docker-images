@@ -9,3 +9,4 @@ server.address=127.0.0.1
 api.python-gateway.enabled=false
 EOF
 echo TEST_DOLPHIN_PRE_READY
+echo PRE >> /kubedoop/run/dolphin-events

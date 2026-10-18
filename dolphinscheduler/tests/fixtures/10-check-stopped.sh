@@ -9,3 +9,4 @@ done
 test -f /kubedoop/run/lifecycle-db.mv.db
 touch /kubedoop/run/initialized
 echo TEST_DOLPHIN_POST_DONE
+echo POST >> /kubedoop/run/dolphin-events
